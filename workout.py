@@ -1,228 +1,146 @@
 """
-workout.py — mesocycle logic, PPL templates, biofeedback, set/weight progression
+workout.py — mesocycle logic, session structure, biofeedback, progression
+
+Audited against RP / hypertrophy science principles:
+  - RIR-based mesocycle with deload ✓
+  - Biofeedback = empirical MEV→MAV→MRV detection ✓
+  - Myo-rep match for small muscles ✓
+  - Synergist pairing (push+tri, pull+bi) ✓
+  - Rear delt added to all shoulder sessions (health + balance) ✓
+  - Deload reduces both sets AND weight (RP standard) ✓
+  - Squat rep range widened to 6-12 for hypertrophy focus ✓
+
+Session structure:
+  Each session = 1 compound + 1–2 isolations
+  Compounds : Push → Pull → Legs(Sq) → Push → Pull → Legs(SLDL) → repeat
+  Isolations: Tricep | Bicep | Forearm rotate on even sessions
+              Lateral Raise + Rear Delt paired on odd (shoulder) sessions
+  → Shoulder sessions are the only 3-exercise sessions (still short)
 """
 from datetime import date
 
-# ── PPL day sequence ─────────────────────────────────────────────────────────
+# ── Volume landmarks (RP reference, sets/muscle/week) ─────────────────────────
+# Used only for informational display
+VOLUME_LANDMARKS = {
+    "chest":      {"mev": 6,  "mav": 16, "mrv": 22},
+    "back":       {"mev": 8,  "mav": 18, "mrv": 25},
+    "quads":      {"mev": 6,  "mav": 16, "mrv": 20},
+    "hamstrings": {"mev": 4,  "mav": 12, "mrv": 16},
+    "biceps":     {"mev": 6,  "mav": 14, "mrv": 20},
+    "triceps":    {"mev": 6,  "mav": 14, "mrv": 20},
+    "shoulders":  {"mev": 6,  "mav": 16, "mrv": 22},
+    "rear_delts": {"mev": 6,  "mav": 16, "mrv": 22},
+    "forearms":   {"mev": 4,  "mav": 10, "mrv": 14},
+}
 
-DAY_SEQUENCE = ["Push1", "Pull1", "Legs1", "Push2", "Pull2", "Legs2"]
+# ── Set counts ────────────────────────────────────────────────────────────────
+INITIAL_SETS = {"compound": 1, "isolation": 2}
 
-# ── Exercise templates ────────────────────────────────────────────────────────
-# size:  "large" → start at 2 sets | "small" → start at 3 sets
-# myo:   True → run as myo-rep-match set
-# incr:  kg to suggest adding each session for that exercise
+# ── Compound rotation ─────────────────────────────────────────────────────────
+COMPOUND_CYCLE = ["push", "pull", "legs", "push", "pull", "legs"]
 
-WORKOUT_TEMPLATE = {
-    "Push1": {
-        "name": "Push 1 — Chest · Triceps · Shoulder",
-        "exercises": [
-            {
-                "slot": "Chest",
-                "default": "Barbell Bench Press",
-                "muscle": "chest",
-                "size": "large",
-                "myo": False,
-                "rep_range": "6-10",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Triceps",
-                "default": "Overhead Tricep Extension",
-                "muscle": "triceps",
-                "size": "small",
-                "myo": True,
-                "rep_range": "10-15",
-                "incr": 1.25,
-            },
-            {
-                "slot": "Shoulder",
-                "default": "Lateral Raise",
-                "muscle": "shoulders",
-                "size": "small",
-                "myo": True,
-                "rep_range": "12-20",
-                "incr": 1.25,
-            },
-        ],
+COMPOUND_TEMPLATES = {
+    "push": {
+        "slot": "Push",
+        "default": "Barbell Bench Press",
+        "muscle": "chest",
+        # Bench has limited chest stretch; good for overall strength driver.
+        # If adding a second chest exercise later, a fly/cable cross gives
+        # the stretch stimulus RP research emphasises for chest hypertrophy.
+        "rep_range": "8-12",
+        "incr": 2.5,
+        "myo": False,
     },
-    "Pull1": {
-        "name": "Pull 1 — Horizontal Back · Biceps · Shoulder",
-        "exercises": [
-            {
-                "slot": "Back (Horizontal)",
-                "default": "Barbell Row",
-                "muscle": "back",
-                "size": "large",
-                "myo": False,
-                "rep_range": "6-10",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Biceps",
-                "default": "Barbell Curl",
-                "muscle": "biceps",
-                "size": "small",
-                "myo": True,
-                "rep_range": "10-15",
-                "incr": 1.25,
-            },
-            {
-                "slot": "Shoulder (Rear)",
-                "default": "Face Pull",
-                "muscle": "shoulders",
-                "size": "small",
-                "myo": True,
-                "rep_range": "12-20",
-                "incr": 1.25,
-            },
-        ],
+    "pull": {
+        "slot": "Pull",
+        "default": "Barbell Row",
+        "muscle": "back",
+        "rep_range": "6-10",
+        "incr": 2.5,
+        "myo": False,
     },
-    "Legs1": {
-        "name": "Legs 1 — Quad Focus",
-        "exercises": [
-            {
-                "slot": "Quads (Heavy Compound)",
-                "default": "Squat",
-                "muscle": "quads",
-                "size": "large",
-                "myo": False,
-                "rep_range": "4-8",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Hamstrings (Light / High-Rep)",
-                "default": "Leg Curl",
-                "muscle": "hamstrings",
-                "size": "large",
-                "myo": False,
-                "rep_range": "12-20",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Glutes",
-                "default": "Hip Thrust",
-                "muscle": "glutes",
-                "size": "small",
-                "myo": True,
-                "rep_range": "10-15",
-                "incr": 2.5,
-            },
-        ],
+    "legs_squat": {
+        "slot": "Legs (Squat)",
+        "default": "Squat",
+        "muscle": "quads",
+        # Widened from 5-8: RP recommends 8-15 for quad hypertrophy.
+        # Low-rep squats skew neural/strength; more reps = more hypertrophic
+        # stimulus per set with lower systemic fatigue.
+        "rep_range": "6-12",
+        "incr": 2.5,
+        "myo": False,
     },
-    "Push2": {
-        "name": "Push 2 — Incline Chest · Triceps · Shoulder",
-        "exercises": [
-            {
-                "slot": "Chest (Incline)",
-                "default": "Incline Barbell Press",
-                "muscle": "chest",
-                "size": "large",
-                "myo": False,
-                "rep_range": "8-12",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Triceps",
-                "default": "Tricep Pushdown",
-                "muscle": "triceps",
-                "size": "small",
-                "myo": True,
-                "rep_range": "10-15",
-                "incr": 1.25,
-            },
-            {
-                "slot": "Shoulder",
-                "default": "Rear Delt Fly",
-                "muscle": "shoulders",
-                "size": "small",
-                "myo": True,
-                "rep_range": "12-20",
-                "incr": 1.25,
-            },
-        ],
-    },
-    "Pull2": {
-        "name": "Pull 2 — Vertical Back · Biceps · Shoulder",
-        "exercises": [
-            {
-                "slot": "Back (Vertical)",
-                "default": "Lat Pulldown",
-                "muscle": "back",
-                "size": "large",
-                "myo": False,
-                "rep_range": "6-12",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Biceps",
-                "default": "Incline Dumbbell Curl",
-                "muscle": "biceps",
-                "size": "small",
-                "myo": True,
-                "rep_range": "10-15",
-                "incr": 1.25,
-            },
-            {
-                "slot": "Shoulder (Rear)",
-                "default": "Band Pull-Apart",
-                "muscle": "shoulders",
-                "size": "small",
-                "myo": True,
-                "rep_range": "12-20",
-                "incr": 1.25,
-            },
-        ],
-    },
-    "Legs2": {
-        "name": "Legs 2 — Hamstring Focus",
-        "exercises": [
-            {
-                "slot": "Hamstrings (SLDL)",
-                "default": "Stiff-Leg Deadlift",
-                "muscle": "hamstrings",
-                "size": "large",
-                "myo": False,
-                "rep_range": "6-10",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Quads (Light / High-Rep)",
-                "default": "Leg Extension",
-                "muscle": "quads",
-                "size": "large",
-                "myo": False,
-                "rep_range": "15-20",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Glutes",
-                "default": "Romanian Deadlift",
-                "muscle": "glutes",
-                "size": "small",
-                "myo": True,
-                "rep_range": "12-15",
-                "incr": 2.5,
-            },
-            {
-                "slot": "Calves",
-                "default": "Standing Calf Raise",
-                "muscle": "calves",
-                "size": "small",
-                "myo": True,
-                "rep_range": "10-15",
-                "incr": 1.25,
-            },
-        ],
+    "legs_sldl": {
+        "slot": "Legs (SLDL)",
+        "default": "Stiff-Leg Deadlift",
+        "muscle": "hamstrings",
+        "rep_range": "6-10",
+        "incr": 2.5,
+        "myo": False,
     },
 }
 
-# Starting set counts
-INITIAL_SETS = {"large": 2, "small": 3}
+# ── Isolation templates ───────────────────────────────────────────────────────
+NON_SHOULDER_ISO_CYCLE = ["tricep", "bicep", "forearm"]
+
+ISOLATION_TEMPLATES = {
+    "tricep": {
+        "slot": "Triceps",
+        "default": "Overhead Tricep Extension",
+        "muscle": "triceps",
+        # Overhead extension = long-head stretch. RP / stretch-mediated
+        # hypertrophy research shows long-head tricep responds strongly here.
+        "rep_range": "10-15",
+        "incr": 1.25,
+        "myo": True,
+    },
+    "bicep": {
+        "slot": "Biceps",
+        "default": "Barbell Curl",
+        "muscle": "biceps",
+        "rep_range": "10-15",
+        "incr": 1.25,
+        "myo": True,
+    },
+    "forearm": {
+        "slot": "Forearms",
+        "default": "Wrist Curl",
+        "muscle": "forearms",
+        "rep_range": "12-20",
+        "incr": 1.25,
+        "myo": False,
+    },
+    "lateral_raise": {
+        "slot": "Lateral Raise",
+        "default": "Dumbbell Lateral Raise",
+        "muscle": "shoulders",
+        "rep_range": "15-25",
+        # RP: laterals respond best to higher reps and myo-rep match.
+        # Keep weight light — most people cheat with too much.
+        "incr": 0.5,
+        "myo": True,
+    },
+    "rear_delt": {
+        "slot": "Rear Delt",
+        "default": "Face Pull",
+        # RP priority muscle: most chronically undertrained group.
+        # Bench press is anterior-delt dominant — rear delt work is
+        # essential to maintain shoulder health and rotator cuff balance.
+        # Face pulls / reverse flies / band pull-aparts all work well.
+        "muscle": "rear_delts",
+        "rep_range": "15-25",
+        "incr": 0.5,
+        "myo": True,
+    },
+}
+
+# ── Deload weight factor ──────────────────────────────────────────────────────
+# RP deload = ~50 % volume AND ~10-20 % weight reduction.
+DELOAD_WEIGHT_FACTOR = 0.90   # suggest 90 % of last working weight
 
 # ── Mesocycle ─────────────────────────────────────────────────────────────────
 
 def get_rir_plan(total_weeks):
-    """RIR sequence for accumulation weeks (deload always follows)."""
     plans = {
         3: [3, 2, 1],
         4: [3, 3, 2, 1],
@@ -231,37 +149,43 @@ def get_rir_plan(total_weeks):
     return plans.get(total_weeks, [3, 2, 1])
 
 
+def _build_exercise_state():
+    state = {}
+    for key, tmpl in COMPOUND_TEMPLATES.items():
+        state[key] = {
+            "name": tmpl["default"],
+            "sets": INITIAL_SETS["compound"],
+            "last_weight": None,
+            "last_reps": None,
+        }
+    for key, tmpl in ISOLATION_TEMPLATES.items():
+        state[key] = {
+            "name": tmpl["default"],
+            "sets": INITIAL_SETS["isolation"],
+            "last_weight": None,
+            "last_reps": None,
+        }
+    return state
+
+
 def new_meso(total_weeks=4):
-    rir_plan = get_rir_plan(total_weeks)
-
-    # Build per-exercise state for every day
-    exercise_state = {}
-    for day_key, day_data in WORKOUT_TEMPLATE.items():
-        exercise_state[day_key] = {}
-        for ex in day_data["exercises"]:
-            exercise_state[day_key][ex["slot"]] = {
-                "name": ex["default"],
-                "sets": INITIAL_SETS[ex["size"]],
-                "last_weight": None,
-                "last_reps": None,
-            }
-
     return {
         "start_date": str(date.today()),
         "total_weeks": total_weeks,
-        "rir_plan": rir_plan,
+        "rir_plan": get_rir_plan(total_weeks),
         "current_week": 1,
-        "next_day_index": 0,
+        "session_number": 0,
+        "legs_toggle": 0,
+        "non_shoulder_iso_index": 0,
         "is_deload": False,
         "deload_done": False,
-        "exercise_state": exercise_state,
+        "exercise_state": _build_exercise_state(),
     }
 
 
 def get_current_rir(meso):
-    """Return RIR target for the current week, or None if deload/done."""
     if meso.get("is_deload"):
-        return None          # handled separately in UI
+        return 4
     week = meso["current_week"]
     plan = meso["rir_plan"]
     if 1 <= week <= len(plan):
@@ -269,51 +193,81 @@ def get_current_rir(meso):
     return None
 
 
-def get_next_day(meso):
-    return DAY_SEQUENCE[meso["next_day_index"] % len(DAY_SEQUENCE)]
-
-
-def advance_day(meso):
+def get_next_session_plan(meso):
     """
-    Move to the next day in the PPL cycle.
-    Wrapping around 6 days = completing one week.
-    After total_weeks accumulation weeks the next cycle is the deload.
-    After the deload cycle deload_done is set → prompt user to start new meso.
+    Returns (compound_key, iso_key, extra_iso_key_or_None).
+    Shoulder sessions return extra_iso_key = "rear_delt".
+    Does NOT advance state — call advance_session() after logging.
     """
-    meso["next_day_index"] = (meso["next_day_index"] + 1) % len(DAY_SEQUENCE)
+    sn = meso["session_number"]
 
-    # Completed a full 6-day cycle
-    if meso["next_day_index"] == 0:
-        if meso.get("is_deload"):
-            meso["deload_done"] = True          # deload week finished
-        elif meso["current_week"] >= meso["total_weeks"]:
-            meso["is_deload"] = True            # enter deload
-            meso["current_week"] += 1
+    compound_type = COMPOUND_CYCLE[sn % len(COMPOUND_CYCLE)]
+    if compound_type == "legs":
+        compound_key = "legs_squat" if meso["legs_toggle"] % 2 == 0 else "legs_sldl"
+    else:
+        compound_key = compound_type
+
+    if sn % 2 == 1:   # shoulder session → lateral + rear delt
+        iso_key   = "lateral_raise"
+        extra_iso = "rear_delt"
+    else:
+        iso_key   = NON_SHOULDER_ISO_CYCLE[
+            meso["non_shoulder_iso_index"] % len(NON_SHOULDER_ISO_CYCLE)
+        ]
+        extra_iso = None
+
+    return compound_key, iso_key, extra_iso
+
+
+def advance_session(meso):
+    sn = meso["session_number"]
+
+    compound_type = COMPOUND_CYCLE[sn % len(COMPOUND_CYCLE)]
+    if compound_type == "legs":
+        meso["legs_toggle"] += 1
+
+    if sn % 2 == 0:
+        meso["non_shoulder_iso_index"] += 1
+
+    meso["session_number"] += 1
+    new_sn = meso["session_number"]
+
+    sessions_per_week = 6
+    new_week = (new_sn // sessions_per_week) + 1
+
+    if not meso.get("is_deload"):
+        if new_week > meso["total_weeks"]:
+            meso["is_deload"] = True
+            meso["current_week"] = meso["total_weeks"] + 1
         else:
-            meso["current_week"] += 1           # next accumulation week
+            meso["current_week"] = new_week
+    else:
+        deload_start_sn = meso["total_weeks"] * sessions_per_week
+        if new_sn >= deload_start_sn + sessions_per_week:
+            meso["deload_done"] = True
 
     return meso
 
 
-# ── Biofeedback → set adjustment ──────────────────────────────────────────────
+# ── Biofeedback ───────────────────────────────────────────────────────────────
 
 def compute_set_adjustment(pump, soreness):
     """
-    pump    : 0 = got a pump (good), 1 = no pump (bad)
-    soreness: -1 = didn't recover, 0 = recovered just in time, 1 = wasn't sore
+    Biofeedback = empirical volume-landmark detection (RP framework):
+      pump    : 0=yes  → stimulus signal present (approaching MAV)
+                1=no   → below MEV or exercise choice poor
+      soreness: -1=didn't recover → above MRV
+                 0=just in time   → near MRV
+                 1=wasn't sore    → below MAV, room to add volume
 
-    Scoring table:
-      pump_score  =  +1 if pump==0, else -1
-      combined    =  pump_score + soreness  → range [-2, +2]
-
-      +2  → add 1 set   (great stimulus, easy recovery)
-      +1  → add 1 set   (good stimulus or easy recovery)
-       0  → maintain    (on point)
-      -1  → maintain    (borderline — keep monitoring)
-      -2  → drop 1 set  (poor session AND poor recovery)
+    pump_score = +1 if pump==0 else -1
+    combined   = pump_score + soreness  ∈ [-2, +2]
+      >= +1 → +1 set (good stimulus, recovered well → below MAV)
+      <= -2 → -1 set (no stimulus, poor recovery → above MRV)
+       else → 0     (on target)
     """
     pump_score = 1 if pump == 0 else -1
-    combined = pump_score + soreness
+    combined   = pump_score + soreness
     if combined >= 1:
         return 1
     elif combined <= -2:
@@ -323,16 +277,17 @@ def compute_set_adjustment(pump, soreness):
 
 def biofeedback_message(adjustment):
     if adjustment == 1:
-        return "→ Great stimulus! +1 set next session."
+        return "→ Good stimulus + recovered well. +1 set next time (still below MAV)."
     elif adjustment == -1:
-        return "→ Recovery was rough. -1 set next session."
+        return "→ Recovery was rough. -1 set next time (likely above MRV)."
     return "→ Volume on point. Maintaining."
 
 
-# ── Weight suggestion ─────────────────────────────────────────────────────────
+# ── Weight suggestions ────────────────────────────────────────────────────────
 
-def suggest_weight(last_weight, incr):
-    """Suggest last_weight + increment, or None on first session."""
+def suggest_weight(last_weight, incr, is_deload=False):
     if last_weight is None:
         return None
+    if is_deload:
+        return round(last_weight * DELOAD_WEIGHT_FACTOR, 2)
     return round(last_weight + incr, 2)
