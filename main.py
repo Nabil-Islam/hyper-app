@@ -3,10 +3,10 @@
 main.py — Workout Tracker CLI
 Data stored locally at ~/.workout_data.json
 
-Commands available at any prompt during a workout:
-  /pause   — save progress and exit (resume later with option 1)
+Commands at any prompt during a workout:
+  /pause   — save progress, resume next session
   /cancel  — discard session entirely
-  /done    — finish session early with exercises completed so far
+  /done    — finish early with exercises completed so far
 """
 import sys
 from datetime import date
@@ -16,30 +16,20 @@ import workout as wk
 
 # ── Session control signals ───────────────────────────────────────────────────
 
-class PauseSession(Exception):
-    pass
+class PauseSession(Exception):  pass
+class CancelSession(Exception): pass
+class FinishEarly(Exception):   pass
 
-class CancelSession(Exception):
-    pass
-
-class FinishEarly(Exception):
-    pass
-
-COMMANDS = {
-    "/pause":  PauseSession,
-    "/cancel": CancelSession,
-    "/done":   FinishEarly,
-}
+COMMANDS = {"/pause": PauseSession, "/cancel": CancelSession, "/done": FinishEarly}
 
 def _check_command(raw):
-    """Raise the appropriate signal if the user typed a command."""
-    stripped = raw.strip().lower()
-    if stripped in COMMANDS:
-        raise COMMANDS[stripped]()
+    sig = COMMANDS.get(raw.strip().lower())
+    if sig:
+        raise sig()
 
 # ── CLI helpers ───────────────────────────────────────────────────────────────
 
-def hr(char="─", width=50):
+def hr(char="─", width=52):
     print(char * width)
 
 def header(text):
@@ -54,7 +44,7 @@ def section(text):
     hr()
 
 def _cmd_hint():
-    print("  (type /pause · /done · /cancel at any prompt)")
+    print("  · /pause  · /done  · /cancel  at any prompt ·")
 
 def prompt_int(text, min_val=None, max_val=None, default=None):
     suffix = f" [{default}]" if default is not None else ""
@@ -65,13 +55,13 @@ def prompt_int(text, min_val=None, max_val=None, default=None):
         try:
             val = int(val_str)
         except ValueError:
-            print("    ! Enter a whole number  (or /pause · /done · /cancel).")
+            print("    ! Whole number please.")
             continue
         if min_val is not None and val < min_val:
-            print(f"    ! Minimum is {min_val}.")
+            print(f"    ! Min is {min_val}.")
             continue
         if max_val is not None and val > max_val:
-            print(f"    ! Maximum is {max_val}.")
+            print(f"    ! Max is {max_val}.")
             continue
         return val
 
@@ -85,7 +75,7 @@ def prompt_float(text, suggest=None):
         try:
             return float(raw)
         except ValueError:
-            print("    ! Enter a number (e.g. 60 or 62.5)  (or /pause · /done · /cancel).")
+            print("    ! Enter a number e.g. 60 or 62.5")
 
 def confirm(text):
     raw = input(f"  {text} (y/n): ").strip()
@@ -94,68 +84,68 @@ def confirm(text):
 
 # ── Single exercise block ─────────────────────────────────────────────────────
 
-def _run_exercise(tmpl, ex_key, state, rir_target, is_deload):
-    """
-    Prompt through one exercise.
-    Raises PauseSession, CancelSession, or FinishEarly on command.
-    Returns (updated_state, log_dict) on normal completion.
-    """
-    section(f"{tmpl['slot'].upper()}  ·  {tmpl['muscle']}")
-    myo_tag = "  [MYO-REP MATCH]" if tmpl.get("myo") else ""
-    print(f"  Exercise : {state['name']}{myo_tag}")
-    print(f"  Reps     : {tmpl['rep_range']}  |  RIR {rir_target}")
+def _run_exercise(ex_tmpl, state, rir_target, is_deload):
+    section(f"{ex_tmpl['slot'].upper()}  ·  {ex_tmpl['muscle']}")
+
+    myo_tag  = "  [MYO-REP MATCH]" if ex_tmpl.get("myo") else ""
+    kind_tag = "COMPOUND" if ex_tmpl["kind"] == "compound" else "isolation"
+    print(f"  [{kind_tag}]  {state['name']}{myo_tag}")
+    print(f"  Reps : {ex_tmpl['rep_range']}  |  RIR target: {rir_target}")
+
+    if ex_tmpl.get("note"):
+        print(f"  Note : {ex_tmpl['note']}")
+
     _cmd_hint()
 
-    new_name = input("  Rename?    [ENTER to keep]: ").strip()
+    new_name = input("  Rename? [ENTER to keep]: ").strip()
     _check_command(new_name)
     if new_name:
         state["name"] = new_name
 
-    if tmpl.get("myo") and not is_deload:
+    if ex_tmpl.get("myo") and not is_deload:
         print()
-        print("  MYO-REP MATCH:")
-        print("    1. Activation set to ~1 RIR at top of rep range")
+        print("  MYO-REP MATCH protocol:")
+        print("    1. Activation set — top of rep range, ~1 RIR")
         print("    2. Rest 5-10 breaths")
-        print("    3. Mini-sets matching ~30 % of activation reps until failure to match")
+        print("    3. Mini-sets — match ~30% of activation reps")
+        print("    4. Stop when you can't match")
 
     last_w  = state.get("last_weight")
-    suggest = wk.suggest_weight(last_w, tmpl["incr"], is_deload)
+    suggest = wk.suggest_weight(last_w, ex_tmpl["incr"], is_deload)
 
     if last_w:
-        deload_note = f"  (deload → suggest {suggest} kg)" if is_deload else ""
-        print(f"\n  Last time : {last_w} kg × {state.get('last_reps', '?')} reps{deload_note}")
+        note = f"  (deload → {suggest} kg)" if is_deload else ""
+        print(f"\n  Last  : {last_w} kg × {state.get('last_reps','?')} reps{note}")
     else:
-        print("\n  (First session — enter weight manually)")
+        print("\n  (No previous data — enter weight manually)")
 
     planned = state["sets"]
     if is_deload:
         planned = max(1, (planned + 1) // 2)
-    print(f"  Sets      : {planned}")
+    print(f"  Sets  : {planned}")
     print()
 
     sets_logged = []
 
-    if tmpl.get("myo") and not is_deload:
+    if ex_tmpl.get("myo") and not is_deload:
         weight   = prompt_float("Activation weight (kg)", suggest)
         act_reps = prompt_int("Activation reps", min_val=1)
-        minis    = prompt_int("Mini sets completed", min_val=0)
+        minis    = prompt_int("Mini-sets completed", min_val=0)
         sets_logged.append({
-            "type": "myo",
-            "weight": weight,
-            "activation_reps": act_reps,
-            "mini_sets": minis,
+            "type": "myo", "weight": weight,
+            "activation_reps": act_reps, "mini_sets": minis,
         })
         final_weight, final_reps = weight, act_reps
     else:
-        current_suggest = suggest
+        cur_suggest = suggest
         set_num = 0
         while True:
             set_num += 1
             print(f"  Set {set_num}:")
-            weight = prompt_float("    Weight (kg)", current_suggest)
-            reps   = prompt_int("    Reps", min_val=0)
-            sets_logged.append({"set": set_num, "weight": weight, "reps": reps})
-            current_suggest = weight
+            w = prompt_float("    Weight (kg)", cur_suggest)
+            r = prompt_int("    Reps", min_val=0)
+            sets_logged.append({"set": set_num, "weight": w, "reps": r})
+            cur_suggest = w
             if set_num < planned:
                 continue
             if not is_deload and confirm("  Add another set?"):
@@ -168,7 +158,7 @@ def _run_exercise(tmpl, ex_key, state, rir_target, is_deload):
     state["last_reps"]   = final_reps
 
     # Biofeedback
-    print(f"\n  — Biofeedback: {tmpl['muscle'].upper()} —")
+    print(f"\n  — Biofeedback: {ex_tmpl['muscle'].upper()} —")
     pump     = prompt_int("  Pump?     0=yes  1=no", min_val=0, max_val=1)
     soreness = prompt_int(
         "  Soreness? -1=didn't recover  0=just in time  1=wasn't sore",
@@ -178,16 +168,16 @@ def _run_exercise(tmpl, ex_key, state, rir_target, is_deload):
     print(f"  {wk.biofeedback_message(adj)}")
     state["sets"] = max(1, min(8, state["sets"] + adj))
 
-    log = {
-        "slot":           tmpl["slot"],
+    return state, {
+        "slot":           ex_tmpl["slot"],
         "name":           state["name"],
-        "muscle":         tmpl["muscle"],
-        "myo":            tmpl.get("myo", False),
+        "muscle":         ex_tmpl["muscle"],
+        "kind":           ex_tmpl["kind"],
+        "myo":            ex_tmpl.get("myo", False),
         "sets":           sets_logged,
         "biofeedback":    {"pump": pump, "soreness": soreness},
         "set_adjustment": adj,
     }
-    return state, log
 
 # ── Session runner ────────────────────────────────────────────────────────────
 
@@ -200,149 +190,121 @@ def run_session(data):
         print("\n  Deload complete! Start a fresh mesocycle (option 2).")
         return data
 
-    # ── Resume paused session if one exists ───────────────────────────────────
+    # Resume paused?
     paused = data.get("paused_session")
     if paused:
         print()
         hr("═")
-        print(f"  ⏸  Paused session found ({paused['date']})")
-        print(f"     Completed : {', '.join(e['slot'] for e in paused['exercises_done']) or 'nothing yet'}")
-        remaining = paused.get("exercises_remaining", [])
-        print(f"     Remaining : {', '.join(r['slot'] for r in remaining)}")
+        done_str = ", ".join(e["slot"] for e in paused["exercises_done"]) or "none"
+        left_str = ", ".join(r["slot"] for r in paused["exercises_remaining"])
+        print(f"  ⏸  Paused session from {paused['date']}")
+        print(f"     Done      : {done_str}")
+        print(f"     Remaining : {left_str}")
         hr("═")
-        choice = input("  Resume (r), discard paused & start fresh (s), or back to menu (b)? ").strip().lower()
+        choice = input("  Resume (r)  ·  Discard & start fresh (s)  ·  Back (b): ").strip().lower()
         if choice == "b":
             return data
-        elif choice == "r":
+        if choice == "r":
             return _resume_session(data, paused, meso)
-        else:
-            print("  Paused session discarded.")
-            data.pop("paused_session", None)
+        data.pop("paused_session", None)
+        print("  Paused session discarded.")
 
     is_deload  = meso.get("is_deload", False)
     rir_target = wk.get_current_rir(meso)
-
-    compound_key, iso_key, extra_iso = wk.get_next_session_plan(meso)
-    c_tmpl   = wk.COMPOUND_TEMPLATES[compound_key]
-    i_tmpl   = wk.ISOLATION_TEMPLATES[iso_key]
-    ex2_tmpl = wk.ISOLATION_TEMPLATES[extra_iso] if extra_iso else None
-
-    exercises = [
-        (c_tmpl,   compound_key),
-        (i_tmpl,   iso_key),
-    ]
-    if ex2_tmpl and extra_iso:
-        exercises.append((ex2_tmpl, extra_iso))
+    day_key, day_data = wk.get_next_session(meso)
 
     session_num = meso["session_number"] + 1
-    slots = "  +  ".join(t["slot"] for t, _ in exercises)
-    header(f"Session {session_num}  ·  {slots}")
+    header(f"Session {session_num}  ·  {day_data['name']}")
 
     if is_deload:
-        print("  🔄  DELOAD  —  ~50 % sets  ·  ~90 % weight  ·  clean form, no grinding")
+        print("  🔄  DELOAD — ~50% sets  ·  ~90% weight  ·  perfect form, no grinding")
         rir_target = 4
     else:
-        rir_str = " → ".join(str(r) for r in meso["rir_plan"]) + " → Deload"
+        rir_str = "  →  ".join(str(r) for r in meso["rir_plan"]) + "  →  Deload"
         print(f"  Week {meso['current_week']} of {meso['total_weeks']}  "
-              f"|  RIR target: {rir_target}  |  {rir_str}")
+              f"|  RIR today: {rir_target}  |  {rir_str}")
     print()
-    _cmd_hint()
 
-    return _run_exercises(data, meso, exercises, session_num, rir_target, is_deload,
-                          exercises_done=[], start_index=0)
+    exercises = day_data["exercises"]
+    return _run_exercises(
+        data, meso, day_key, exercises, session_num,
+        rir_target, is_deload, exercises_done=[], start_index=0,
+    )
 
 
 def _resume_session(data, paused, meso):
-    """Reconstruct exercise list and resume from where we left off."""
-    is_deload  = paused.get("is_deload", False)
-    rir_target = paused.get("rir_target", wk.get_current_rir(meso))
+    is_deload   = paused.get("is_deload", False)
+    rir_target  = paused.get("rir_target", wk.get_current_rir(meso))
     session_num = paused["session_n"]
+    day_key     = paused["day_key"]
+    done_keys   = {e["slot"] for e in paused["exercises_done"]}
 
-    remaining_slots = {r["key"]: r for r in paused.get("exercises_remaining", [])}
+    all_exercises = wk.SESSIONS[day_key]["exercises"]
+    remaining     = [e for e in all_exercises if e["slot"] not in done_keys]
 
-    # Rebuild full exercise list in original order
-    compound_key, iso_key, extra_iso = paused["plan"]
-    all_keys = [compound_key, iso_key] + ([extra_iso] if extra_iso else [])
-
-    exercises = []
-    for key in all_keys:
-        tmpl = (wk.COMPOUND_TEMPLATES.get(key) or wk.ISOLATION_TEMPLATES.get(key))
-        if tmpl:
-            exercises.append((tmpl, key))
-
-    # Only the remaining ones need running
-    remaining_exercises = [(t, k) for t, k in exercises if k in remaining_slots]
-
-    slots = "  +  ".join(t["slot"] for t, _ in remaining_exercises)
-    header(f"Session {session_num} (resumed)  ·  {slots}")
-    print()
+    header(f"Session {session_num} (resumed)  ·  {wk.SESSIONS[day_key]['name']}")
     _cmd_hint()
 
     return _run_exercises(
-        data, meso, remaining_exercises, session_num, rir_target, is_deload,
+        data, meso, day_key, remaining, session_num,
+        rir_target, is_deload,
         exercises_done=paused["exercises_done"],
         start_index=len(paused["exercises_done"]),
-        plan=paused["plan"],
         session_date=paused["date"],
     )
 
 
-def _run_exercises(data, meso, exercises, session_num, rir_target, is_deload,
-                   exercises_done, start_index, plan=None, session_date=None):
-    """
-    Inner loop.  Handles pause / cancel / finish-early by saving state.
-    Returns updated data dict in all cases.
-    """
-    ex_state   = meso["exercise_state"]
-    session_log = list(exercises_done)  # copy already-done exercises
-
-    # Build plan tuple for pause storage
-    if plan is None:
-        compound_key, iso_key, extra_iso = wk.get_next_session_plan(meso)
-        plan = (compound_key, iso_key, extra_iso)
-
+def _run_exercises(data, meso, day_key, exercises, session_num,
+                   rir_target, is_deload, exercises_done,
+                   start_index=0, session_date=None):
     if session_date is None:
         session_date = str(date.today())
 
-    remaining = list(exercises)
+    ex_state   = meso["exercise_state"]
+    session_log = list(exercises_done)
+    remaining   = list(exercises)
 
-    for tmpl, ex_key in exercises:
-        remaining = [(t, k) for t, k in remaining if k != ex_key]
+    for ex_tmpl in exercises:
+        remaining = [e for e in remaining if e["slot"] != ex_tmpl["slot"]]
+        key = ex_tmpl["key"]
 
         try:
-            ex_state[ex_key], log = _run_exercise(
-                tmpl, ex_key, ex_state[ex_key], rir_target, is_deload
+            ex_state[key], log = _run_exercise(
+                ex_tmpl, ex_state[key], rir_target, is_deload
             )
             session_log.append(log)
 
         except PauseSession:
-            _save_paused(data, session_num, session_date, rir_target, is_deload,
-                         plan, session_log, remaining)
-            print()
-            print("  ⏸  Session paused. Your progress is saved.")
-            print("     Resume next time you start a workout.")
+            data["paused_session"] = {
+                "date":                session_date,
+                "session_n":           session_num,
+                "rir_target":          rir_target,
+                "is_deload":           is_deload,
+                "day_key":             day_key,
+                "exercises_done":      session_log,
+                "exercises_remaining": [{"slot": e["slot"], "key": e["key"]} for e in remaining],
+            }
+            print("\n  ⏸  Paused. Progress saved — resume next time you start a workout.")
             return data
 
         except CancelSession:
             data.pop("paused_session", None)
-            print()
-            print("  ✗  Session cancelled. No data saved for this session.")
+            print("\n  ✗  Session cancelled. Nothing saved.")
             return data
 
         except FinishEarly:
             if not session_log:
                 print("  Nothing completed — session not saved.")
                 return data
-            print()
-            print(f"  Finishing early — saving {len(session_log)} exercise(s).")
+            print(f"\n  Finishing early — saving {len(session_log)} exercise(s).")
             break
 
-    # ── Normal finish (or /done) ──────────────────────────────────────────────
+    # Commit session
     data.pop("paused_session", None)
-
     data["sessions"].append({
         "date":       session_date,
         "session_n":  session_num,
+        "day":        day_key,
         "week":       meso["current_week"],
         "rir_target": rir_target,
         "is_deload":  is_deload,
@@ -355,57 +317,45 @@ def _run_exercises(data, meso, exercises, session_num, rir_target, is_deload,
     print()
     hr("═")
     if new_meso.get("deload_done"):
-        print("  ✓  Deload done! Start a fresh mesocycle (option 2).")
+        print("  ✓  Deload done. Start a fresh mesocycle (option 2).")
     elif new_meso.get("is_deload") and not meso.get("is_deload"):
-        print("  ✓  Accumulation complete! Next up: DELOAD week.")
+        print("  ✓  Accumulation done! Next up: DELOAD week.")
     else:
-        nck, nik, nextra = wk.get_next_session_plan(new_meso)
-        nc = wk.COMPOUND_TEMPLATES[nck]["slot"]
-        ni = wk.ISOLATION_TEMPLATES[nik]["slot"]
-        ne = f" + {wk.ISOLATION_TEMPLATES[nextra]['slot']}" if nextra else ""
-        print(f"  ✓  Session logged! Next up: {nc} + {ni}{ne}")
+        nk, nd = wk.get_next_session(new_meso)
+        print(f"  ✓  Session logged! Next: {nd['name']}")
     hr("═")
 
     return data
 
-
-def _save_paused(data, session_num, session_date, rir_target, is_deload,
-                 plan, exercises_done, remaining_exercises):
-    """Persist enough state to resume later."""
-    data["paused_session"] = {
-        "date":        session_date,
-        "session_n":   session_num,
-        "rir_target":  rir_target,
-        "is_deload":   is_deload,
-        "plan":        list(plan),
-        "exercises_done": exercises_done,
-        "exercises_remaining": [
-            {"key": k, "slot": t["slot"]} for t, k in remaining_exercises
-        ],
-    }
-
 # ── New meso wizard ───────────────────────────────────────────────────────────
 
 def start_new_meso(data):
-    header("NEW MESOCYCLE")
-    weeks = prompt_int("Accumulation weeks? (3 / 4 / 5)", min_val=3, max_val=5, default=4)
+    header("NEW MESOCYCLE  —  Cut Protocol")
+    print("  Recommended: 3 weeks (cut-optimised — shorter mesos, higher RIR start)")
+    print("  Longer options available if you want to experiment.")
+    print()
+    weeks = prompt_int("Accumulation weeks (3 / 4 / 5)", min_val=3, max_val=5, default=3)
     meso  = wk.new_meso(weeks)
     data["current_meso"] = meso
+    data.pop("paused_session", None)
 
-    rir_str = " → ".join(str(r) for r in meso["rir_plan"]) + " → Deload"
-    nck, nik, nextra = wk.get_next_session_plan(meso)
-    nc = wk.COMPOUND_TEMPLATES[nck]["slot"]
-    ni = wk.ISOLATION_TEMPLATES[nik]["slot"]
-    ne = f" + {wk.ISOLATION_TEMPLATES[nextra]['slot']}" if nextra else ""
+    rir_str = "  →  ".join(str(r) for r in meso["rir_plan"]) + "  →  Deload"
+    _, first_day = wk.get_next_session(meso)
 
-    print(f"\n  ✓  Meso created!")
-    print(f"     Duration  : {weeks} weeks + deload")
-    print(f"     RIR plan  : {rir_str}")
-    print(f"     Sets start: compound = {wk.INITIAL_SETS['compound']}, "
-          f"isolation = {wk.INITIAL_SETS['isolation']}")
-    print(f"     Session 1 : {nc} + {ni}{ne}")
+    print(f"\n  ✓  Mesocycle created!")
+    print(f"     Duration   : {weeks} weeks + 1 deload week")
+    print(f"     RIR plan   : {rir_str}")
+    print(f"     Sets/start : compounds {wk.INITIAL_SETS['compound']}  ·  isolations {wk.INITIAL_SETS['isolation']}")
+    print(f"     Session 1  : {first_day['name']}")
     print()
-    print("  Volume reference (RP landmarks, sets/muscle/week):")
+    print("  Protein target (GLP-1 + cut — most important number):")
+    print("  ┌─────────────────────────────────────────────────┐")
+    print("  │  200-220g protein daily                         │")
+    print("  │  At your calorie target, fill protein FIRST     │")
+    print("  │  then carbs (around training), then fats        │")
+    print("  └─────────────────────────────────────────────────┘")
+    print()
+    print("  RP volume landmarks (sets/muscle/week):")
     print(f"  {'Muscle':<14} {'MEV':>5} {'MAV':>5} {'MRV':>5}")
     hr()
     for muscle, v in wk.VOLUME_LANDMARKS.items():
@@ -421,23 +371,22 @@ def view_history(data):
         print("\n  No sessions logged yet.")
         return
 
-    how_many = min(len(sessions), 10)
-    print(f"\n  Last {how_many} sessions:\n")
-
-    for s in sessions[-how_many:]:
+    n = min(len(sessions), 10)
+    print(f"\n  Last {n} sessions:\n")
+    for s in sessions[-n:]:
         tag = " [DELOAD]" if s.get("is_deload") else ""
-        print(f"  {s['date']}  Session {s['session_n']}  "
-              f"Week {s['week']}  RIR {s['rir_target']}{tag}")
+        print(f"  {s['date']}  {s.get('day','?').upper():<10}  "
+              f"Session {s['session_n']}  Week {s['week']}  RIR {s['rir_target']}{tag}")
         for ex in s["exercises"]:
             sets = ex["sets"]
             if sets and sets[0].get("type") == "myo":
                 s0 = sets[0]
-                summary = (f"{s0['weight']} kg × {s0['activation_reps']} "
-                           f"+ {s0['mini_sets']} minis")
+                summary = f"{s0['weight']}kg × {s0['activation_reps']} + {s0['mini_sets']} minis"
             else:
                 summary = "  ".join(f"{st['weight']}×{st['reps']}" for st in sets)
             adj = {1: "↑", -1: "↓", 0: "="}.get(ex.get("set_adjustment", 0), "")
-            print(f"    • {ex['name']:<32} {summary} {adj}")
+            kind = "C" if ex.get("kind") == "compound" else "i"
+            print(f"    [{kind}] {ex['name']:<30} {summary} {adj}")
         print()
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -451,31 +400,29 @@ def _show_status(meso, paused):
         return
 
     if meso.get("is_deload"):
-        print(f"  DELOAD WEEK  (session {meso['session_number'] + 1})")
+        print(f"  🔄  DELOAD WEEK  (session {meso['session_number'] + 1})")
     else:
         rir = wk.get_current_rir(meso)
-        plan_str = " → ".join(str(r) for r in meso["rir_plan"]) + " → Deload"
+        plan_str = "  →  ".join(str(r) for r in meso["rir_plan"]) + "  →  Deload"
         print(f"  Week {meso['current_week']} of {meso['total_weeks']}  "
-              f"RIR {rir}  |  {plan_str}")
+              f"|  RIR {rir}  |  {plan_str}")
 
-    nck, nik, nextra = wk.get_next_session_plan(meso)
-    nc = wk.COMPOUND_TEMPLATES[nck]["slot"]
-    ni = wk.ISOLATION_TEMPLATES[nik]["slot"]
-    ne = f" + {wk.ISOLATION_TEMPLATES[nextra]['slot']}" if nextra else ""
-    print(f"  Next   : {nc} + {ni}{ne}  (session {meso['session_number'] + 1})")
-    print(f"  Started: {meso.get('start_date', '?')}")
+    _, nd = wk.get_next_session(meso)
+    print(f"  Next   : {nd['name']}  (session {meso['session_number'] + 1})")
+    print(f"  Started: {meso.get('start_date','?')}")
 
     if paused:
-        done_slots = ", ".join(e["slot"] for e in paused["exercises_done"]) or "none"
-        print(f"  ⏸  Paused session from {paused['date']}  (done: {done_slots})")
+        done = ", ".join(e["slot"] for e in paused["exercises_done"]) or "none"
+        print(f"  ⏸  Paused session ({paused['date']}) — done: {done}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     print()
-    print("╔════════════════════════════════════════════╗")
-    print("║       W O R K O U T   T R A C K E R       ║")
-    print("╚════════════════════════════════════════════╝")
+    print("╔══════════════════════════════════════════════╗")
+    print("║        W O R K O U T   T R A C K E R        ║")
+    print("║     Upper / Lower  ·  Cut Protocol           ║")
+    print("╚══════════════════════════════════════════════╝")
 
     data = store.load_data()
 
@@ -491,7 +438,6 @@ def main():
         hr("═")
 
         choice = input("  > ").strip()
-
         if choice == "1":
             data = run_session(data)
             _save(data)
